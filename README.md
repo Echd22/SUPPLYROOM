@@ -7,7 +7,7 @@ A simple Android app for running a supply room. It scans QR codes and barcodes, 
 - Every push to `main` builds a signed APK and publishes it under **Releases**.
 
 **Download link for phones (always the newest version):**
-`https://github.com/<owner>/<repo>/releases/latest/download/SupplyRoom.apk`
+`https://github.com/Echd22/SUPPLYROOM/releases/latest/download/SupplyRoom.apk`
 
 ---
 
