@@ -30,11 +30,13 @@ jobs:
           KS: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
         run: |
           if [ -z "$KS" ]; then
-            echo "::error::Signing key secret is missing. Updates would not install over older versions, so stopping."
-            exit 1
+            echo "::warning::Signing key secret is missing. Building a test APK only; no release will be published."
+            echo "SIGNED=false" >> "$GITHUB_ENV"
+            exit 0
           fi
           echo "$KS" | base64 -d > "$RUNNER_TEMP/release.jks"
           echo "SIGNING_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          echo "SIGNED=true" >> "$GITHUB_ENV"
 
       - name: Build
         env:
@@ -52,7 +54,7 @@ jobs:
           path: SupplyRoom.apk
 
       - name: Publish release
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/main' && env.SIGNED == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
