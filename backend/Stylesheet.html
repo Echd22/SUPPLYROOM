@@ -1,0 +1,60 @@
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #fff; --ink: #1d232b; --muted: #6b7480; --line: #d9dde3;
+    --accent: #1f5fa8; --accent-ink: #fff; --ok: #1b7f45; --warn: #b26a00; --bad: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14171b; --card: #1e2329; --ink: #e6e9ed; --muted: #98a1ac; --line: #343b44; --accent: #5b9be0; --accent-ink: #0d1117; }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; font: 16px/1.4 system-ui, -apple-system, Roboto, sans-serif; background: var(--bg); color: var(--ink); }
+  header { display: flex; gap: 8px; align-items: center; padding: 10px 14px; background: var(--card); border-bottom: 1px solid var(--line); }
+  header #who { margin-left: auto; font-size: 13px; }
+  nav { display: flex; position: sticky; top: 0; z-index: 5; background: var(--card); border-bottom: 1px solid var(--line); }
+  nav button { flex: 1; padding: 12px 4px; border: 0; background: none; color: var(--muted); font-size: 14px; border-bottom: 3px solid transparent; }
+  nav button.on { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  main { padding: 14px; max-width: 720px; margin: 0 auto; }
+  h3 { margin: 22px 0 8px; } h4 { margin: 16px 0 6px; color: var(--muted); font-weight: 600; }
+  label { display: block; margin: 10px 0; font-size: 14px; color: var(--muted); }
+  label.check { display: flex; gap: 8px; align-items: center; color: var(--ink); margin: 8px 0; }
+  input, select, button, .btn { font: inherit; }
+  input:not([type=checkbox]), select {
+    display: block; width: 100%; margin-top: 4px; padding: 10px; border: 1px solid var(--line);
+    border-radius: 8px; background: var(--card); color: var(--ink);
+  }
+  button, .btn {
+    padding: 10px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--card);
+    color: var(--ink); cursor: pointer; text-align: center; white-space: nowrap;
+  }
+  button.primary { width: 100%; margin-top: 14px; background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; padding: 14px; }
+  button.link { border: 0; background: none; color: var(--accent); padding: 0 4px; }
+  button.danger { color: var(--bad); }
+  button:disabled { opacity: .5; }
+  .btnrow { display: flex; gap: 8px; margin: 8px 0; } .btnrow > * { flex: 1; }
+  .inline { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+  .inline input, .inline select { margin-top: 0; flex: 1; min-width: 0; }
+  .inline .qty { flex: 0 0 72px; }
+  .muted { color: var(--muted); }
+  #reader { width: 100%; border-radius: 10px; overflow: hidden; }
+  #reader:empty { display: none; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
+  .card .top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .card .sub { font-size: 13px; color: var(--muted); }
+  .card .row { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+  .card .row input, .card .row select { margin-top: 0; padding: 8px; }
+  .pill { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--line); color: var(--ink); white-space: nowrap; }
+  .pill.ok { background: #d6f0df; color: var(--ok); } .pill.warn { background: #fdecc8; color: var(--warn); } .pill.bad { background: #f9d7d4; color: var(--bad); }
+  .sigwrap { margin: 10px 0; }
+  .sighead { display: flex; justify-content: space-between; font-size: 14px; color: var(--muted); }
+  #sig { width: 100%; height: 140px; background: #fff; border: 1px solid var(--line); border-radius: 8px; touch-action: none; }
+  .chartbox { position: relative; height: 260px; }
+  #toast {
+    position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); max-width: 92vw;
+    background: #222; color: #fff; padding: 10px 16px; border-radius: 8px; opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 50;
+  }
+  #toast.show { opacity: .95; } #toast.err { background: var(--bad); }
+  .result { border-left: 4px solid var(--ok); } .result.err { border-left-color: var(--bad); }
+  ul.tight { margin: 4px 0; padding-left: 20px; }
+  .empty { color: var(--muted); text-align: center; padding: 20px; }
+</style>

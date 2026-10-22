@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <?!= include('Stylesheet'); ?>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+</head>
+<body>
+  <header>
+    <strong id="org">Supply Room</strong>
+    <span id="queue" class="pill warn" hidden></span>
+    <span id="who" class="muted"></span>
+  </header>
+
+  <nav id="tabs">
+    <button data-tab="scan" class="on">Scan</button>
+    <button data-tab="stock">Stock</button>
+    <button data-tab="charts">Charts</button>
+    <button data-tab="history">History</button>
+    <button data-tab="more">More</button>
+  </nav>
+
+  <main>
+    <!-- ================= SCAN ================= -->
+    <section id="tab-scan">
+      <label>Action
+        <select id="action"></select>
+      </label>
+
+      <div id="reader"></div>
+      <div class="btnrow">
+        <button id="btnCam" type="button">▶ Live scan</button>
+        <label class="btn" for="photo">📷 Photo scan</label>
+        <input id="photo" type="file" accept="image/*" capture="environment" hidden>
+      </div>
+      <form id="manualForm" class="inline">
+        <input id="manual" placeholder="Type code or use Bluetooth scanner" autocomplete="off" enterkeyhint="go">
+        <input id="manualQty" type="number" min="1" value="1" class="qty" title="Quantity (counted items / cycle count)">
+        <button>Add</button>
+      </form>
+
+      <div id="cart"></div>
+
+      <div id="details">
+        <label data-show="ISSUE">Recipient (name / unit) *
+          <input id="recipient" autocomplete="off">
+        </label>
+        <label data-show="ISSUE">Due back (loaners only)
+          <input id="dueBack" type="date">
+        </label>
+        <label data-show="RECEIVE RETURN TRANSFER ADJUST COUNT">Location
+          <input id="toLoc" list="locList" autocomplete="off">
+          <datalist id="locList"></datalist>
+        </label>
+        <label data-show="RECEIVE RETURN TRANSFER ISSUE DISPOSE ADJUST">Notes
+          <input id="notes" autocomplete="off">
+        </label>
+        <div data-show="ISSUE RETURN RECEIVE DISPOSE TRANSFER">
+          <label class="check"><input type="checkbox" id="sendForm"> Email a filled form</label>
+          <input id="emailTo" type="email" placeholder="recipient@example.gov" hidden>
+        </div>
+        <div data-show="ISSUE" class="sigwrap">
+          <div class="sighead"><span>Recipient signature</span><button type="button" id="sigClear" class="link">clear</button></div>
+          <canvas id="sig" height="140"></canvas>
+        </div>
+      </div>
+
+      <button id="submit" class="primary">Submit</button>
+      <div id="result"></div>
+    </section>
+
+    <!-- ================= STOCK ================= -->
+    <section id="tab-stock" hidden>
+      <div class="inline">
+        <input id="stockFilter" placeholder="Filter…">
+        <label class="check"><input type="checkbox" id="lowOnly"> Low only</label>
+        <button id="stockRefresh" type="button">↻</button>
+      </div>
+      <div id="stockList"></div>
+    </section>
+
+    <!-- ================= CHARTS ================= -->
+    <section id="tab-charts" hidden>
+      <div class="inline">
+        <select id="chartDays">
+          <option value="30">30 days</option>
+          <option value="90">90 days</option>
+          <option value="365">1 year</option>
+        </select>
+        <select id="chartItem"><option value="">All items</option></select>
+        <button id="chartLoad" type="button">Load</button>
+      </div>
+      <h4>In / out</h4>
+      <div class="chartbox"><canvas id="chartFlow"></canvas></div>
+      <h4>Most issued</h4>
+      <div class="chartbox"><canvas id="chartTop"></canvas></div>
+    </section>
+
+    <!-- ================= HISTORY ================= -->
+    <section id="tab-history" hidden>
+      <div class="inline">
+        <input id="histFilter" placeholder="Filter by name, tag, recipient…">
+        <button id="histRefresh" type="button">↻</button>
+      </div>
+      <div id="histList"></div>
+    </section>
+
+    <!-- ================= MORE ================= -->
+    <section id="tab-more" hidden>
+      <h3>Add catalog item</h3>
+      <form id="addItem">
+        <label>Name * <input name="name" required></label>
+        <label>Category <input name="category"></label>
+        <label>Tracking *
+          <select name="tracking">
+            <option value="counted">Counted (by quantity)</option>
+            <option value="serialized">Serialized (each piece tracked)</option>
+          </select>
+        </label>
+        <label>Item barcode / UPC <input name="barcode" id="addBarcode"></label>
+        <label>Unit (ea, box, pr…) <input name="unit" value="ea"></label>
+        <label>Minimum stock <input name="minStock" type="number" min="0" value="0"></label>
+        <label>Home location <input name="location"></label>
+        <button class="primary">Add item</button>
+      </form>
+
+      <h3>Print QR labels</h3>
+      <div class="inline">
+        <select id="labelItem"></select>
+        <button id="labelGo" type="button">Make PDF</button>
+      </div>
+      <div id="labelOut"></div>
+
+      <h3>Spreadsheet</h3>
+      <p><a id="sheetLink" target="_blank">Open the backing Google Sheet</a></p>
+    </section>
+  </main>
+
+  <div id="toast"></div>
+  <?!= include('JavaScript'); ?>
+</body>
+</html>

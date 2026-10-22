@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A simple box with a barcode on it, inside the 72dp adaptive-icon safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- box lid -->
+    <path android:fillColor="#FFFFFF" android:pathData="M30,40 L54,30 L78,40 L54,50 Z" />
+    <!-- box front -->
+    <path android:fillColor="#E3ECF7" android:pathData="M30,42 L53,52 L53,80 L30,70 Z" />
+    <path android:fillColor="#C4D6EE" android:pathData="M55,52 L78,42 L78,70 L55,80 Z" />
+    <!-- barcode -->
+    <path android:fillColor="#1F5FA8" android:pathData="M35,55 h2 v12 h-2 z M39,56 h1 v12 h-1 z M42,57 h3 v12 h-3 z M47,58 h1 v12 h-1 z M50,59 h1.5 v11 h-1.5 z" />
+</vector>

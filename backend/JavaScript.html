@@ -1,0 +1,505 @@
+<script>
+/* ================= State & utilities ================= */
+const S = {
+  boot: null, action: 'ISSUE', cart: [], counts: [], scanner: null, scanning: false,
+  lastCode: '', lastAt: 0, charts: {}, stock: [], history: [], sigDirty: false,
+};
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const call = (fn, ...args) => new Promise((res, rej) =>
+  google.script.run.withSuccessHandler(res).withFailureHandler(rej)[fn](...args));
+const errMsg = e => (e && e.message) ? e.message : String(e);
+
+function toast(msg, isErr) {
+  const t = $('toast');
+  t.textContent = msg; t.className = 'show' + (isErr ? ' err' : '');
+  clearTimeout(t._h); t._h = setTimeout(() => { t.className = ''; }, isErr ? 4500 : 2200);
+}
+function buzz(ok) { try { navigator.vibrate && navigator.vibrate(ok ? 60 : [80, 60, 80]); } catch (e) {} }
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+};
+const itemById = id => (S.boot.catalog || []).find(c => String(c.ItemID).toLowerCase() === String(id).toLowerCase());
+const newId = () => 'B' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+
+/* ================= Boot ================= */
+async function boot() {
+  try {
+    S.boot = await call('apiBootstrap');
+  } catch (e) {
+    document.querySelector('main').innerHTML = '<div class="card result err">' + esc(errMsg(e)) + '</div>';
+    return;
+  }
+  $('org').textContent = S.boot.org || 'Supply Room';
+  $('who').textContent = S.boot.me.name;
+  $('sheetLink').href = S.boot.sheetUrl;
+  const sel = $('action');
+  sel.innerHTML = Object.keys(S.boot.actions).map(k => `<option value="${k}">${esc(S.boot.actions[k].label)}</option>`).join('') +
+    '<option value="COUNT">Cycle count (audit)</option>';
+  sel.value = store.get('action', 'ISSUE');
+  if (!sel.value) sel.value = 'ISSUE';
+  S.action = sel.value;
+  $('toLoc').value = S.boot.defaultLocation || '';
+  fillItemSelects();
+  applyAction();
+  renderCart();
+  initSig();
+  flushQueue();
+}
+
+function fillItemSelects() {
+  const opts = (S.boot.catalog || []).map(c => `<option value="${esc(c.ItemID)}">${esc(c.Name)}</option>`).join('');
+  $('chartItem').innerHTML = '<option value="">All items</option>' + opts;
+  $('labelItem').innerHTML = (S.boot.catalog || []).filter(c => String(c.Tracking).toLowerCase() === 'serialized')
+    .map(c => `<option value="${esc(c.ItemID)}">${esc(c.Name)}</option>`).join('');
+  const locs = new Set([S.boot.defaultLocation].concat((S.boot.catalog || []).map(c => c.Location)).filter(Boolean));
+  $('locList').innerHTML = [...locs].map(l => `<option value="${esc(l)}">`).join('');
+}
+
+/* ================= Tabs ================= */
+$('tabs').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  document.querySelectorAll('#tabs button').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('main > section').forEach(s => { s.hidden = s.id !== 'tab-' + b.dataset.tab; });
+  if (b.dataset.tab !== 'scan') stopCam();
+  if (b.dataset.tab === 'stock') loadStock();
+  if (b.dataset.tab === 'history') loadHistory();
+  if (b.dataset.tab === 'charts' && !S.charts.flow) loadCharts();
+});
+
+/* ================= Action / form ================= */
+$('action').addEventListener('change', e => {
+  S.action = e.target.value; store.set('action', S.action);
+  applyAction(); renderCart();
+});
+function applyAction() {
+  document.querySelectorAll('#details [data-show]').forEach(el => {
+    el.hidden = !el.dataset.show.split(' ').includes(S.action);
+  });
+  $('submit').textContent = S.action === 'COUNT' ? 'Finish count & compare' : 'Submit';
+  if (S.action === 'ISSUE') setTimeout(sizeSig, 0);
+}
+$('sendForm').addEventListener('change', e => { $('emailTo').hidden = !e.target.checked; });
+
+/* ================= Scanning ================= */
+function getScanner() {
+  if (!S.scanner) {
+    S.scanner = new Html5Qrcode('reader', { verbose: false, experimentalFeatures: { useBarCodeDetectorIfSupported: true } });
+  }
+  return S.scanner;
+}
+$('btnCam').addEventListener('click', async () => {
+  if (S.scanning) return stopCam();
+  try {
+    await getScanner().start(
+      { facingMode: 'environment' },
+      { fps: 10, qrbox: (w, h) => ({ width: Math.floor(w * 0.85), height: Math.floor(Math.min(w, h) * 0.55) }) },
+      code => onDecoded(code), () => {});
+    S.scanning = true; $('btnCam').textContent = '■ Stop';
+  } catch (e) {
+    toast('Live camera unavailable here — use Photo scan. (' + errMsg(e) + ')', true);
+  }
+});
+async function stopCam() {
+  if (!S.scanning) return;
+  try { await S.scanner.stop(); S.scanner.clear(); } catch (e) {}
+  S.scanning = false; $('btnCam').textContent = '▶ Live scan';
+}
+$('photo').addEventListener('change', async e => {
+  const f = e.target.files && e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  await stopCam();
+  try {
+    const code = await getScanner().scanFile(f, false);
+    onDecoded(code, true);
+  } catch (err) {
+    buzz(false); toast('No code found in photo — get closer, avoid glare', true);
+  }
+});
+$('manualForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const v = $('manual').value.trim(); if (!v) return;
+  const q = Math.max(1, parseInt($('manualQty').value, 10) || 1);
+  $('manual').value = ''; $('manualQty').value = 1;
+  onDecoded(v, true, q);
+  $('manual').focus();
+});
+
+function onDecoded(code, force, qty) {
+  code = String(code).trim();
+  const now = Date.now();
+  if (!force && code === S.lastCode && now - S.lastAt < 2500) return; // debounce live repeats
+  S.lastCode = code; S.lastAt = now;
+  if (S.action === 'COUNT') {
+    for (let i = 0; i < (qty || 1); i++) S.counts.push(code);
+    buzz(true); renderCart(); return;
+  }
+  handleCode(code, qty || 1);
+}
+
+async function handleCode(code, qty) {
+  // A serialized RECEIVE line waiting for its serial takes the next unknown scan.
+  const waiting = S.cart.find(l => l.needsSerial && !l.serial);
+  let r;
+  try { r = await call('apiLookup', code); }
+  catch (e) { buzz(false); return toast(errMsg(e), true); }
+
+  if (r.kind === 'unit') {
+    if (waiting && S.action === 'RECEIVE') { buzz(false); return toast('Serial ' + code + ' already exists as ' + r.unit.Tag, true); }
+    if (S.cart.some(l => l.tag === r.unit.Tag)) { buzz(false); return toast(r.unit.Tag + ' already in list', true); }
+    S.cart.push({
+      itemId: r.unit.ItemID, name: r.item ? r.item.Name : r.unit.ItemID, serialized: true,
+      tag: r.unit.Tag, serial: r.unit.Serial, status: r.unit.Status, assignedTo: r.unit.AssignedTo, condition: '',
+    });
+    buzz(true); toast((r.item ? r.item.Name : '') + ' ' + r.unit.Tag);
+  } else if (r.kind === 'item') {
+    const it = r.item;
+    if (String(it.Tracking).toLowerCase() === 'serialized') {
+      if (S.action !== 'RECEIVE') { buzz(false); return toast('That is the item barcode — scan the unit\'s QR tag or serial', true); }
+      S.cart.push({ itemId: it.ItemID, name: it.Name, serialized: true, needsSerial: true, serial: '', condition: 'Serviceable', expires: '' });
+      buzz(true); toast('Now scan the serial for ' + it.Name);
+    } else {
+      const line = S.cart.find(l => !l.serialized && l.itemId === it.ItemID);
+      if (line) line.qty += qty; else S.cart.push({ itemId: it.ItemID, name: it.Name, serialized: false, qty: qty, unit: it.Unit, condition: '' });
+      buzz(true); toast(it.Name + ' +' + qty);
+    }
+  } else {
+    if (waiting && S.action === 'RECEIVE') {
+      waiting.serial = code; buzz(true); toast('Serial ' + code + ' → ' + waiting.name);
+    } else {
+      buzz(false);
+      if (confirm('Unknown code "' + code + '". Add it as a new catalog item?')) {
+        $('addBarcode').value = code;
+        document.querySelector('#tabs [data-tab=more]').click();
+        document.querySelector('#addItem [name=name]').focus();
+      }
+      return;
+    }
+  }
+  renderCart();
+}
+
+/* ================= Cart ================= */
+function renderCart() {
+  const el = $('cart');
+  if (S.action === 'COUNT') {
+    const tally = {};
+    S.counts.forEach(c => { tally[c] = (tally[c] || 0) + 1; });
+    const keys = Object.keys(tally);
+    el.innerHTML = '<div class="card"><div class="top"><b>Cycle count</b><span class="pill">' + S.counts.length + ' scans</span></div>' +
+      '<div class="sub">Scan every tag on the shelf (and each counted item, or type its barcode with a quantity). Set Location to limit the comparison.</div>' +
+      (keys.length ? '<ul class="tight">' + keys.map(k => `<li>${esc(k)} ${tally[k] > 1 ? '×' + tally[k] : ''} <button class="link" data-uncount="${esc(k)}">−</button></li>`).join('') + '</ul>' : '') +
+      (keys.length ? '<button class="link danger" id="countClear">Clear count</button>' : '') + '</div>';
+    return;
+  }
+  if (!S.cart.length) { el.innerHTML = '<div class="empty">Scan or type codes to build a list.</div>'; return; }
+  const conds = S.boot ? S.boot.conditions : ['Serviceable'];
+  const showCond = ['RETURN', 'ADJUST', 'RECEIVE'].includes(S.action);
+  el.innerHTML = S.cart.map((l, i) => {
+    let warn = '';
+    if (l.serialized && l.status) {
+      if (S.action === 'ISSUE' && l.status !== 'In Stock') warn = l.status;
+      if (S.action === 'RETURN' && l.status !== 'Issued') warn = l.status;
+      if (S.action === 'RECEIVE') warn = 'Already exists';
+    }
+    const sub = l.serialized
+      ? (l.tag ? `${esc(l.tag)} · S/N ${esc(l.serial)}${l.assignedTo ? ' · with ' + esc(l.assignedTo) : ''}` : (l.serial ? 'S/N ' + esc(l.serial) + ' · new tag on submit' : '<b>Scan or type serial →</b>'))
+      : '';
+    return `<div class="card">
+      <div class="top"><b>${esc(l.name)}</b>
+        <span>${warn ? `<span class="pill bad">${esc(warn)}</span>` : (l.status ? `<span class="pill">${esc(l.status)}</span>` : '')}
+        <button class="link danger" data-rm="${i}">✕</button></span></div>
+      ${sub ? `<div class="sub">${sub}</div>` : ''}
+      <div class="row">
+        ${!l.serialized ? `<input type="number" data-qty="${i}" value="${l.qty}" ${S.action === 'ADJUST' ? '' : 'min="1"'} style="width:90px"> <span class="muted">${esc(l.unit || 'ea')}${S.action === 'ADJUST' ? ' (± change)' : ''}</span>` : ''}
+        ${l.needsSerial ? `<input data-serial="${i}" placeholder="Serial #" value="${esc(l.serial)}">` : ''}
+        ${l.needsSerial ? `<input type="date" data-exp="${i}" value="${esc(l.expires)}" title="Expiration date (optional)">` : ''}
+        ${showCond ? `<select data-cond="${i}">${(S.action === 'ADJUST' ? ['', ...conds] : conds).map(c => `<option ${c === l.condition ? 'selected' : ''} value="${esc(c)}">${c ? esc(c) : '(no change)'}</option>`).join('')}</select>` : ''}
+      </div></div>`;
+  }).join('') + `<div class="muted" style="text-align:right">${S.cart.length} line(s) · <button class="link danger" id="cartClear">clear</button></div>`;
+}
+$('cart').addEventListener('click', e => {
+  const t = e.target;
+  if (t.dataset.rm !== undefined) { S.cart.splice(+t.dataset.rm, 1); renderCart(); }
+  if (t.id === 'cartClear' && confirm('Clear the list?')) { S.cart = []; renderCart(); }
+  if (t.dataset.uncount !== undefined) { const i = S.counts.lastIndexOf(t.dataset.uncount); if (i >= 0) S.counts.splice(i, 1); renderCart(); }
+  if (t.id === 'countClear' && confirm('Clear all count scans?')) { S.counts = []; renderCart(); }
+});
+$('cart').addEventListener('change', e => {
+  const t = e.target, d = t.dataset;
+  if (d.qty !== undefined) S.cart[+d.qty].qty = parseInt(t.value, 10) || 0;
+  if (d.serial !== undefined) S.cart[+d.serial].serial = t.value.trim();
+  if (d.exp !== undefined) S.cart[+d.exp].expires = t.value;
+  if (d.cond !== undefined) S.cart[+d.cond].condition = t.value;
+});
+
+/* ================= Signature pad ================= */
+function sizeSig() {
+  const c = $('sig'); const r = c.getBoundingClientRect();
+  if (!r.width) return;
+  if (c.width !== Math.round(r.width)) { c.width = Math.round(r.width); c.height = 140; S.sigDirty = false; }
+}
+function initSig() {
+  const c = $('sig'), ctx = c.getContext('2d');
+  let drawing = false, last = null;
+  const pos = e => { const r = c.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
+  c.addEventListener('pointerdown', e => { sizeSig(); drawing = true; last = pos(e); c.setPointerCapture(e.pointerId); });
+  c.addEventListener('pointermove', e => {
+    if (!drawing) return;
+    const p = pos(e);
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 2.2; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+    last = p; S.sigDirty = true;
+  });
+  ['pointerup', 'pointercancel'].forEach(ev => c.addEventListener(ev, () => { drawing = false; }));
+  $('sigClear').addEventListener('click', clearSig);
+  window.addEventListener('resize', sizeSig);
+}
+function clearSig() { const c = $('sig'); c.getContext('2d').clearRect(0, 0, c.width, c.height); S.sigDirty = false; }
+
+/* ================= Submit ================= */
+$('submit').addEventListener('click', async () => {
+  if (S.action === 'COUNT') return finishCount();
+  if (!S.cart.length) return toast('List is empty', true);
+  const missing = S.cart.find(l => l.needsSerial && !l.serial);
+  if (missing) return toast('Serial missing for ' + missing.name, true);
+  if (S.action === 'ISSUE' && !$('recipient').value.trim()) return toast('Recipient is required', true);
+  if ($('sendForm').checked && !$('sendForm').closest('[data-show]').hidden && !$('emailTo').value.trim()) return toast('Enter an email for the form', true);
+
+  const p = {
+    clientId: newId(), action: S.action,
+    lines: S.cart.map(l => ({ itemId: l.itemId, tag: l.tag || '', serial: l.serial || '', qty: l.serialized ? 1 : l.qty, condition: l.condition || '', expires: l.expires || '' })),
+    recipient: $('recipient').value.trim(),
+    dueBack: $('dueBack').value,
+    to: ['RECEIVE', 'RETURN', 'TRANSFER', 'ADJUST'].includes(S.action) ? $('toLoc').value.trim() : '',
+    notes: $('notes').value.trim(),
+    sendForm: $('sendForm').checked && !$('sendForm').closest('[data-show]').hidden,
+    emailTo: $('emailTo').value.trim(),
+    signature: S.action === 'ISSUE' && S.sigDirty ? $('sig').toDataURL('image/png') : '',
+  };
+  const btn = $('submit'); btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    const r = await call('apiSubmit', p);
+    showResult(r); resetForm();
+  } catch (e) {
+    if (!navigator.onLine || /network|failed to fetch|timeout|NetworkError/i.test(errMsg(e))) {
+      enqueue(p); resetForm();
+      toast('No connection — saved on this phone, will sync automatically', true);
+    } else {
+      buzz(false);
+      $('result').innerHTML = `<div class="card result err">${esc(errMsg(e))}</div>`;
+    }
+  } finally {
+    btn.disabled = false; applyAction();
+  }
+});
+
+function resetForm() {
+  S.cart = []; renderCart();
+  ['recipient', 'dueBack', 'notes'].forEach(id => { $(id).value = ''; });
+  clearSig();
+}
+
+function showResult(r) {
+  buzz(true);
+  if (r.duplicate) { $('result').innerHTML = `<div class="card result">Batch ${esc(r.batchId)} was already saved.</div>`; return; }
+  const newTags = r.lines.filter(l => l.isNew);
+  S.lastNew = newTags;
+  $('result').innerHTML = `<div class="card result">
+    <div class="top"><b>Saved ✓</b><span class="pill">${esc(r.batchId)}</span></div>
+    <ul class="tight">${r.lines.map(l => `<li>${esc(l.name)} ${l.tag ? esc(l.tag) : '×' + l.qty}</li>`).join('')}</ul>
+    ${r.emailed ? '<div class="pill ok">Form emailed</div>' : ''}
+    ${r.emailError ? `<div class="pill bad">Email failed: ${esc(r.emailError)}</div>` : ''}
+    ${r.low && r.low.length ? `<div class="sub" style="color:var(--warn)">Low stock: ${r.low.map(l => esc(l.name) + ' (' + l.onHand + '/' + l.min + ')').join(', ')}</div>` : ''}
+    ${newTags.length ? `<div class="row"><button id="printNew">Print ${newTags.length} new label(s)</button></div><div id="newLabelOut"></div>` : ''}
+  </div>`;
+  if (newTags.length) $('printNew').onclick = () => makeLabels(newTags, $('newLabelOut'));
+}
+
+/* ================= Offline queue ================= */
+function enqueue(p) { const q = store.get('queue', []); q.push(p); store.set('queue', q); showQueue(); }
+function showQueue() {
+  const n = store.get('queue', []).length;
+  $('queue').hidden = !n; $('queue').textContent = n + ' unsynced';
+}
+async function flushQueue() {
+  const q = store.get('queue', []);
+  showQueue();
+  if (!q.length || !navigator.onLine) return;
+  const left = [];
+  for (const p of q) {
+    try { await call('apiSubmit', p); }
+    catch (e) {
+      if (/network|failed to fetch|timeout/i.test(errMsg(e))) left.push(p);
+      else toast('Queued batch rejected: ' + errMsg(e), true); // business-rule error: drop & report
+    }
+  }
+  store.set('queue', left); showQueue();
+  if (left.length < q.length) toast('Synced ' + (q.length - left.length) + ' queued batch(es)');
+}
+window.addEventListener('online', flushQueue);
+$('queue').addEventListener('click', flushQueue);
+
+/* ================= Cycle count ================= */
+async function finishCount() {
+  if (!S.counts.length) return toast('Nothing scanned', true);
+  const btn = $('submit'); btn.disabled = true; btn.textContent = 'Comparing…';
+  try {
+    const r = await call('apiCycleCount', $('toLoc').value.trim(), S.counts);
+    const list = (arr, f) => arr.length ? '<ul class="tight">' + arr.map(f).join('') + '</ul>' : '<div class="sub">None</div>';
+    $('result').innerHTML = `<div class="card result ${r.missing.length || r.unexpected.length || r.unknown.length ? 'err' : ''}">
+      <div class="top"><b>Count — ${esc(r.location)}</b><span class="pill">${r.matched}/${r.expected} matched</span></div>
+      <h4>Missing (expected on shelf, not scanned)</h4>${list(r.missing, m => `<li>${esc(m.tag)} ${esc(m.name)} · S/N ${esc(m.serial)}</li>`)}
+      <h4>Unexpected (scanned, but records disagree)</h4>${list(r.unexpected, u => `<li>${esc(u.tag)} ${esc(u.name)} — ${esc(u.status)} @ ${esc(u.status === 'Issued' ? u.assignedTo : u.location)}</li>`)}
+      <h4>Counted items</h4>${list(r.counted, c => `<li>${esc(c.name)}: scanned ${c.scanned}, system ${c.system} ${c.scanned !== c.system ? `<span class="pill bad">${c.scanned - c.system > 0 ? '+' : ''}${c.scanned - c.system}</span>` : '<span class="pill ok">✓</span>'}</li>`)}
+      <h4>Unknown codes</h4>${list(r.unknown, u => `<li>${esc(u)}</li>`)}
+      <div class="sub">Fix differences with “Adjust / inspect” (counted ± qty) or the correct action.</div>
+    </div>`;
+  } catch (e) { toast(errMsg(e), true); }
+  finally { btn.disabled = false; applyAction(); }
+}
+
+/* ================= Stock ================= */
+async function loadStock() {
+  $('stockList').innerHTML = '<div class="empty">Loading…</div>';
+  try { S.stock = await call('apiStock'); renderStock(); }
+  catch (e) { $('stockList').innerHTML = `<div class="card result err">${esc(errMsg(e))}</div>`; }
+}
+function renderStock() {
+  const f = $('stockFilter').value.toLowerCase(), low = $('lowOnly').checked;
+  const rows = S.stock.filter(r => (!low || r.low) && (!f || (r.name + ' ' + r.category + ' ' + r.barcode).toLowerCase().includes(f)));
+  $('stockList').innerHTML = rows.length ? rows.map(r => `<div class="card" data-item="${esc(r.itemId)}" data-ser="${r.tracking === 'serialized'}">
+    <div class="top"><b>${esc(r.name)}</b><span class="pill ${r.low ? 'bad' : 'ok'}">${r.onHand} ${esc(r.unit || '')}${r.min ? ' / min ' + r.min : ''}</span></div>
+    <div class="sub">${esc(r.category || '')} · ${r.tracking}${r.tracking === 'serialized' ? ` · ${r.issued} issued · ${r.inspect} need inspection — tap for units` : ''}</div>
+    <div class="units"></div></div>`).join('') : '<div class="empty">No items</div>';
+}
+$('stockFilter').addEventListener('input', renderStock);
+$('lowOnly').addEventListener('change', renderStock);
+$('stockRefresh').addEventListener('click', loadStock);
+$('stockList').addEventListener('click', async e => {
+  const card = e.target.closest('.card'); if (!card || card.dataset.ser !== 'true') return;
+  const box = card.querySelector('.units');
+  if (box.innerHTML) { box.innerHTML = ''; return; }
+  box.innerHTML = '<div class="sub">Loading…</div>';
+  try {
+    const us = await call('apiUnits', card.dataset.item);
+    box.innerHTML = us.length ? '<ul class="tight">' + us.map(u => `<li>${esc(u.Tag)} · ${esc(u.Serial)} — ${esc(u.Status)}${u.AssignedTo ? ' (' + esc(u.AssignedTo) + ')' : ''}${u.Expires ? ' · exp ' + esc(u.Expires) : ''}${u.Condition && u.Condition !== 'Serviceable' ? ' · ' + esc(u.Condition) : ''}</li>`).join('') + '</ul>' : '<div class="sub">No units yet</div>';
+  } catch (err) { box.innerHTML = `<div class="sub">${esc(errMsg(err))}</div>`; }
+});
+
+/* ================= Charts ================= */
+async function loadCharts() {
+  try {
+    const d = await call('apiChart', +$('chartDays').value, $('chartItem').value);
+    const css = getComputedStyle(document.documentElement);
+    const ink = css.getPropertyValue('--muted').trim() || '#666';
+    Chart.defaults.color = ink;
+    const labels = d.labels.map(l => l.slice(5));
+    if (S.charts.flow) S.charts.flow.destroy();
+    S.charts.flow = new Chart($('chartFlow'), {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [
+          { label: 'Received new', data: d.received, backgroundColor: '#2e7d32', stack: 'in' },
+          { label: 'Returned', data: d.returned, backgroundColor: '#81c784', stack: 'in' },
+          { label: 'Issued', data: d.issued.map(v => -v), backgroundColor: '#1f5fa8', stack: 'out' },
+          { label: 'Disposed', data: d.disposed.map(v => -v), backgroundColor: '#b3261e', stack: 'out' },
+        ],
+      },
+      options: {
+        maintainAspectRatio: false, plugins: { title: { display: true, text: d.weekly ? 'Per week (out shown below 0)' : 'Per day (out shown below 0)' } },
+        scales: { x: { stacked: true }, y: { stacked: true, ticks: { callback: v => Math.abs(v) } } },
+      },
+    });
+    if (S.charts.top) S.charts.top.destroy();
+    S.charts.top = new Chart($('chartTop'), {
+      type: 'bar',
+      data: { labels: d.topIssued.map(t => t.name), datasets: [{ label: 'Issued', data: d.topIssued.map(t => t.qty), backgroundColor: '#1f5fa8' }] },
+      options: { indexAxis: 'y', maintainAspectRatio: false, plugins: { legend: { display: false } } },
+    });
+  } catch (e) { toast(errMsg(e), true); }
+}
+$('chartLoad').addEventListener('click', loadCharts);
+
+/* ================= History ================= */
+async function loadHistory() {
+  $('histList').innerHTML = '<div class="empty">Loading…</div>';
+  try { S.history = await call('apiHistory', 300); renderHistory(); }
+  catch (e) { $('histList').innerHTML = `<div class="card result err">${esc(errMsg(e))}</div>`; }
+}
+function renderHistory() {
+  const f = $('histFilter').value.toLowerCase();
+  const batches = [], byId = {};
+  S.history.forEach(t => {
+    if (!byId[t.BatchID]) { byId[t.BatchID] = { id: t.BatchID, t0: t, lines: [] }; batches.push(byId[t.BatchID]); }
+    byId[t.BatchID].lines.push(t);
+  });
+  const admin = S.boot.me.role === 'admin';
+  const shown = batches.filter(b => !f || JSON.stringify(b.lines).toLowerCase().includes(f)).slice(0, 80);
+  $('histList').innerHTML = shown.length ? shown.map(b => {
+    const t = b.t0, a = S.boot.actions[t.Action];
+    return `<div class="card">
+      <div class="top"><b>${esc(a ? a.label : t.Action)}</b><span class="sub">${esc(t.Timestamp)}</span></div>
+      <div class="sub">${esc(t.User)}${t.Recipient ? ' → ' + esc(t.Recipient) : ''} · ${esc(b.id)}</div>
+      <ul class="tight">${b.lines.map(l => `<li style="${l.Voided ? 'text-decoration:line-through;opacity:.6' : ''}">${esc(l.ItemName)} ${l.Tag ? esc(l.Tag) : '×' + esc(l.Qty)}
+        ${admin && !l.Voided ? `<button class="link danger" data-void="${esc(l.TxnID)}">void</button>` : ''}</li>`).join('')}</ul>
+      <div class="row"><button data-mail="${esc(b.id)}">Email form</button></div></div>`;
+  }).join('') : '<div class="empty">No transactions</div>';
+}
+$('histFilter').addEventListener('input', renderHistory);
+$('histRefresh').addEventListener('click', loadHistory);
+$('histList').addEventListener('click', async e => {
+  const d = e.target.dataset;
+  if (d.mail) {
+    const to = prompt('Email the form for ' + d.mail + ' to:', store.get('lastEmail', ''));
+    if (!to) return;
+    store.set('lastEmail', to);
+    try { await call('apiSendForm', d.mail, to); toast('Form sent'); } catch (err) { toast(errMsg(err), true); }
+  }
+  if (d.void) {
+    const why = prompt('Reason for voiding ' + d.void + '?');
+    if (!why) return;
+    try { await call('apiVoid', d.void, why); toast('Voided'); loadHistory(); } catch (err) { toast(errMsg(err), true); }
+  }
+});
+
+/* ================= Add item ================= */
+$('addItem').addEventListener('submit', async e => {
+  e.preventDefault();
+  const o = Object.fromEntries(new FormData(e.target).entries());
+  try {
+    const row = await call('apiAddItem', o);
+    S.boot.catalog.push(row); fillItemSelects();
+    e.target.reset();
+    toast('Added ' + row.Name + ' (' + row.ItemID + ')');
+  } catch (err) { toast(errMsg(err), true); }
+});
+
+/* ================= Labels ================= */
+function qrDataUrl(text) {
+  const div = document.createElement('div');
+  new QRCode(div, { text: text, width: 256, height: 256, correctLevel: QRCode.CorrectLevel.M });
+  const c = div.querySelector('canvas');
+  return c ? c.toDataURL('image/png') : div.querySelector('img').src;
+}
+async function makeLabels(list, outEl) {
+  outEl.innerHTML = '<div class="sub">Building PDF…</div>';
+  try {
+    const labels = list.map(l => ({ tag: l.tag, serial: l.serial, name: l.name, img: qrDataUrl(l.tag) }));
+    const url = await call('apiLabelsPdf', labels);
+    outEl.innerHTML = `<a href="${esc(url)}" target="_blank">Open label PDF (${labels.length})</a>`;
+  } catch (e) { outEl.innerHTML = `<div class="sub">${esc(errMsg(e))}</div>`; }
+}
+$('labelGo').addEventListener('click', async () => {
+  const id = $('labelItem').value; if (!id) return;
+  try {
+    const list = await call('apiLabelData', id);
+    if (!list.length) return toast('No units for that item', true);
+    makeLabels(list, $('labelOut'));
+  } catch (e) { toast(errMsg(e), true); }
+});
+
+boot();
+</script>
